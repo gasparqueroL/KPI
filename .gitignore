@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Datos sensibles
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3
+backend/data/imports/
+
+# Alembic
+backend/alembic/__pycache__/
+
+# CSV originales (ya están en raíz, no versionar)
+ventas.csv
+detalle_ventas.csv
+movimientos_caja.csv
+
+# JSONs de debug/snapshots locales (no versionar)
+_coh.json
+_dash.json
+_fam.json
+_imp_*.json
+_import_*.json
+
+# PDFs internos / datos de la empresa (mantener docs/ versionado)
+30718*.pdf
+KPIs_por_area_empresa.pdf
+
+# Backups de DB
+backend/backups/
+backend/data/backups/
+
+# HTML reports puntuales
+Informe_*.html
+
+# Editor / IDE / asistentes locales
+.vscode/
+.idea/
+.claude/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

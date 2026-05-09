@@ -1,0 +1,17 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlalchemy>=2.0.36
+pandas>=2.2.3
+openpyxl>=3.1.0
+python-multipart>=0.0.17
+pydantic>=2.10.0
+pytest>=8.3.0
+httpx>=0.28.0
+alembic>=1.14.0
+# reportlab: usado por _pdf_extracto.py, _pdf_resumen_diario.py,
+# _pdf_reporte_mensual.py para generar PDFs server-side. Sin esto, el
+# import de cualquier router que use estos modules crashea al startup.
+# Upper bound <5.0.0 — reportlab tuvo cambios incompatibles entre majors
+# (3.x→4.x deprecó algunos APIs). Sin tests de PDF en CI, un major bump
+# silencioso podría romper render en producción.
+reportlab>=4.0.0,<5.0.0
