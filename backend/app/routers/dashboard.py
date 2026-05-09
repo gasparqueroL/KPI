@@ -223,6 +223,18 @@ def reporte_mensual_pdf(
     margen_op = _try(lambda: financieros.margen_operativo(db, desde=desde, hasta=hasta))
     dpo = _try(lambda: financieros.dpo_promedio(db))
     dependencia = _try(lambda: financieros.dependencia_proveedores(db, desde=desde, hasta=hasta, top=1))
+    # KPIs derivados del mes y resumen de objetivos — opcionales para
+    # no romper PDFs si el módulo de objetivos no está listo aún.
+    def _objetivos_resumen():
+        from app.routers import kpis_objetivos_router
+        return kpis_objetivos_router.resumen(db)
+    def _kpis_derivados_lista():
+        from app.kpis import derivados as kd
+        periodo = f"{desde.year:04d}-{desde.month:02d}"
+        r = kd.kpis_del_mes_con_comparativa(db, periodo)
+        return r.get("kpis", [])
+    objetivos_res = _try(_objetivos_resumen)
+    kpis_d = _try(_kpis_derivados_lista)
     # Cache TTL 30s (alertas_router): evita re-correr todas las queries
     # pesadas si el dueño descarga el reporte varias veces seguidas.
     alertas_activas = obtener_alertas_cacheadas(db)
@@ -268,6 +280,8 @@ def reporte_mensual_pdf(
         margen_op=margen_op,
         dpo=dpo,
         dependencia=dependencia,
+        objetivos_resumen=objetivos_res,
+        kpis_derivados=kpis_d,
     )
     nombre_mes = desde.strftime("%Y-%m")
     hoy = date.today().isoformat()

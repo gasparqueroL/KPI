@@ -25,6 +25,24 @@ from reportlab.platypus import (
 from app.routers._pdf_extracto import _estilos_pdf, _fmt_money_strict
 
 
+def _formato_kpi_valor(valor, unidad: str) -> str:
+    """Formato compacto para tabla de KPIs en el PDF."""
+    if valor is None:
+        return "—"
+    if unidad in ("ARS", "ARS/empleado"):
+        return _fmt_money_strict(valor)
+    if unidad == "%":
+        return f"{valor:.1f}%"
+    if unidad == "ratio":
+        return f"{valor:.2f}"
+    if unidad in ("score", "‰"):
+        return f"{valor:.1f}{' ‰' if unidad == '‰' else ''}"
+    # Default: número con 1 decimal si no es entero
+    if isinstance(valor, float) and valor != int(valor):
+        return f"{valor:.1f}"
+    return str(int(valor)) if isinstance(valor, (int, float)) else str(valor)
+
+
 def _delta_label(delta_pct: float | None) -> str:
     """Renderiza el delta % vs período anterior con flecha y color HTML.
 
@@ -63,6 +81,8 @@ def render_reporte_mensual_pdf(
     margen_op: dict[str, Any] | None = None,
     dpo: dict[str, Any] | None = None,
     dependencia: dict[str, Any] | None = None,
+    objetivos_resumen: dict[str, Any] | None = None,
+    kpis_derivados: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Genera el PDF y devuelve los bytes."""
     buf = BytesIO()
@@ -201,6 +221,64 @@ def render_reporte_mensual_pdf(
     flow.append(Paragraph("<b>Top 5 vendedores</b>", e_kpi))
     flow.append(t_vend)
     flow.append(Spacer(1, 5 * mm))
+
+    # KPIs manuales / derivados (NPS, ROA, rotación, etc.) — solo se
+    # muestra si el caller pasó datos. Mostramos hasta 12 KPIs con
+    # status ok para no inflar el PDF — los faltan no aportan al lector.
+    if kpis_derivados:
+        ok_kpis = [k for k in kpis_derivados if k.get("status") == "ok"
+                   and k.get("valor") is not None]
+        if ok_kpis:
+            flow.append(Paragraph("<b>KPIs del período</b>", e_kpi))
+            kpi_rows = [["Área", "KPI", "Valor", "Objetivo"]]
+            for k in ok_kpis[:12]:
+                valor_str = _formato_kpi_valor(k.get("valor"), k.get("unidad", ""))
+                obj = k.get("objetivo")
+                if obj is not None:
+                    op = "≤" if k.get("mejor_si") == "bajar" else "≥"
+                    cumple = k.get("cumple_objetivo")
+                    icon = " ✓" if cumple is True else " ✗" if cumple is False else ""
+                    obj_str = f"{op} {_formato_kpi_valor(obj, k.get('unidad', ''))}{icon}"
+                else:
+                    obj_str = "—"
+                kpi_rows.append([
+                    Paragraph(k.get("area", ""), e_celda),
+                    Paragraph(k.get("label", k.get("codigo", "")), e_celda),
+                    Paragraph(valor_str, e_celda),
+                    Paragraph(obj_str, e_celda),
+                ])
+            ktbl = Table(kpi_rows, colWidths=[24 * mm, 90 * mm, 35 * mm, 31 * mm], repeatRows=1)
+            ktbl.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            flow.append(ktbl)
+            flow.append(Spacer(1, 4 * mm))
+
+    # Resumen de cumplimiento de objetivos (línea compacta).
+    if objetivos_resumen and objetivos_resumen.get("total", 0) > 0:
+        total = objetivos_resumen["total"]
+        cumplen = objetivos_resumen.get("cumplen", 0)
+        no_cumplen = objetivos_resumen.get("no_cumplen", 0)
+        sin_valor = objetivos_resumen.get("sin_valor", 0)
+        periodo_eval = objetivos_resumen.get("periodo_evaluado", "")
+        flow.append(Paragraph(
+            f"<b>Cumplimiento de objetivos ({periodo_eval}):</b> "
+            f"<font color='#16a34a'>{cumplen} cumplen</font> · "
+            f"<font color='#dc2626'>{no_cumplen} no cumplen</font> · "
+            f"<font color='#94a3b8'>{sin_valor} sin valor</font> "
+            f"de {total} totales.",
+            e_sub,
+        ))
+        flow.append(Spacer(1, 3 * mm))
 
     # Alertas activas (al final, marcando situación)
     flow.append(Paragraph("<b>Alertas activas al cierre del período</b>", e_kpi))
