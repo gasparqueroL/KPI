@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.kpis._fechas import hoy_ar
 from app.models.movimiento_caja import MovimientoCaja
@@ -204,7 +204,10 @@ def vencimientos_proximos(db: Session, dias_ventana: int = 30) -> list[dict[str,
     hoy = hoy_ar()
     limite = hoy + timedelta(days=dias_ventana)
 
-    facturas = db.query(FacturaProveedor).filter(
+    # joinedload(proveedor) evita N+1 al acceder a f.proveedor.nombre en el loop.
+    facturas = db.query(FacturaProveedor).options(
+        joinedload(FacturaProveedor.proveedor)
+    ).filter(
         FacturaProveedor.fecha_vencimiento.isnot(None),
         FacturaProveedor.fecha_vencimiento <= limite,
         FacturaProveedor.anulada == False,  # noqa: E712
@@ -257,7 +260,10 @@ def aging_proveedores(
     hoy = hoy_ar()
     cortes = ["bucket_0_30", "bucket_31_60", "bucket_61_90", "bucket_90_mas"]
 
-    facturas = db.query(FacturaProveedor).filter(
+    # joinedload(proveedor) evita N+1 al acceder a f.proveedor.nombre en el loop.
+    facturas = db.query(FacturaProveedor).options(
+        joinedload(FacturaProveedor.proveedor)
+    ).filter(
         FacturaProveedor.anulada == False,  # noqa: E712
     ).all()
 

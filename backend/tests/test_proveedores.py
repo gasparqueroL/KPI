@@ -218,3 +218,86 @@ def test_aging_proveedores_factura_saldada_se_excluye(db):
 
     ag = aging_proveedores(db)
     assert ag["items"] == []
+
+
+def _contar_queries(db):
+    """Context manager helper: cuenta SELECTs ejecutados.
+    Útil para tests anti-N+1: si se duplican facturas debería seguir habiendo
+    el mismo número de queries (gracias a joinedload)."""
+    from sqlalchemy import event
+    queries = []
+
+    def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        if statement.strip().upper().startswith("SELECT"):
+            queries.append(statement)
+
+    event.listen(db.bind, "before_cursor_execute", _before_cursor_execute)
+    return queries, lambda: event.remove(db.bind, "before_cursor_execute", _before_cursor_execute)
+
+
+def test_vencimientos_proximos_no_tiene_n_mas_uno(db):
+    """Regresión: el loop sobre facturas accede f.proveedor.nombre.
+    Sin joinedload eso dispara 1 query por factura. Con joinedload, solo 2
+    queries totales (facturas + pagos), independiente del N de facturas.
+    Probamos con 5 facturas: si crece linealmente con N, falla."""
+    p1 = _setup(db)
+    p2 = Proveedor(nombre="Otro SA", cuit="30-99999999-9")
+    p3 = Proveedor(nombre="Tercero SA", cuit="30-11111111-1")
+    db.add_all([p2, p3])
+    db.commit()
+    proveedores = [p1, p2, p3]
+    for i in range(5):
+        prov = proveedores[i % 3]
+        db.add(FacturaProveedor(
+            id_proveedor=prov.id,
+            fecha_emision=date(2026, 4, 1),
+            fecha_vencimiento=date(2026, 4, 1) + timedelta(days=i),
+            total=Decimal("1000"),
+        ))
+    db.commit()
+
+    # Pre-warm: SQLAlchemy puede emitir queries de schema/metadata en la 1ra llamada.
+    vencimientos_proximos(db, dias_ventana=60)
+
+    queries, cleanup = _contar_queries(db)
+    try:
+        out = vencimientos_proximos(db, dias_ventana=60)
+        assert len(out) == 5  # 5 facturas pendientes
+        # Esperado: 1 query (facturas + JOIN proveedor) + 1 query (pagado_por_factura).
+        # Sin joinedload serían: 1 + 1 + 5 = 7 queries.
+        assert len(queries) <= 3, (
+            f"N+1 detectado: {len(queries)} queries para 5 facturas. "
+            f"Queries:\n" + "\n".join(queries)
+        )
+    finally:
+        cleanup()
+
+
+def test_aging_proveedores_no_tiene_n_mas_uno(db):
+    """Mismo test pero para aging_proveedores()."""
+    p1 = _setup(db)
+    p2 = Proveedor(nombre="Otro SA", cuit="30-99999999-9")
+    db.add(p2)
+    db.commit()
+    for i in range(6):
+        prov = p1 if i % 2 == 0 else p2
+        db.add(FacturaProveedor(
+            id_proveedor=prov.id,
+            fecha_emision=date(2026, 4, 1),
+            fecha_vencimiento=date(2026, 4, 1) + timedelta(days=i),
+            total=Decimal("1000"),
+        ))
+    db.commit()
+
+    aging_proveedores(db)  # pre-warm
+
+    queries, cleanup = _contar_queries(db)
+    try:
+        ag = aging_proveedores(db)
+        assert len(ag["items"]) == 2  # 2 proveedores con saldo
+        # Sin joinedload: 1 + 1 + 6 = 8 queries. Con joinedload: 2.
+        assert len(queries) <= 3, (
+            f"N+1 detectado en aging: {len(queries)} queries para 6 facturas."
+        )
+    finally:
+        cleanup()
