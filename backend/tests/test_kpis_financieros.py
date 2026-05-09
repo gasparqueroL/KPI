@@ -1344,3 +1344,135 @@ def test_kpis_derivados_rotacion_rrhh(db):
     assert rot["status"] == "ok"
     # 3 / ((20+18)/2) * 100 = 3 / 19 * 100 ≈ 15.79
     assert abs(rot["valor"] - (3 / 19 * 100)) < 0.1
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tests de edge cases temporales con freezegun
+# ──────────────────────────────────────────────────────────────────────────
+# Estos tests fijan la fecha del sistema para validar comportamientos en
+# transiciones críticas: cambio de año, año bisiesto, primer día del mes.
+# Sin freezegun era imposible escribirlos de forma determinista.
+
+from freezegun import freeze_time
+
+
+@freeze_time("2026-01-15 12:00:00")
+def test_alertas_periodo_anterior_cruzando_anio(db):
+    """En enero, "mes anterior" debe ser diciembre del año previo (2025-12),
+    no enero del mismo año. Bug clásico: hoy.month - 1 = 0."""
+    from app.kpis.alertas import evaluar_alertas
+    from app.models.kpi_objetivo import KpiObjetivo
+
+    _setup_minimo(db)
+    # Cargo dato en diciembre 2025 (mes anterior real)
+    db.add(KpiManual(periodo="2025-12", codigo="nps", valor=Decimal("30")))
+    db.add(KpiObjetivo(codigo="nps", valor_objetivo=Decimal("50")))
+    db.commit()
+
+    alertas = evaluar_alertas(db)
+    obj_alertas = [a for a in alertas if a["codigo"] == "objetivo_no_cumple"]
+    # Debe encontrar el dato de 2025-12 y disparar alerta
+    assert len(obj_alertas) == 1
+    assert "2025-12" in obj_alertas[0]["titulo"]
+
+
+@freeze_time("2024-02-29 12:00:00")
+def test_alertas_periodo_anterior_anio_bisiesto(db):
+    """En 29-feb-2024 (bisiesto), "mes anterior" debe ser enero 2024.
+    `hoy.replace(day=1) - timedelta(days=1)` = 2024-01-31."""
+    from app.kpis.alertas import evaluar_alertas
+    from app.models.kpi_objetivo import KpiObjetivo
+
+    _setup_minimo(db)
+    db.add(KpiManual(periodo="2024-01", codigo="nps", valor=Decimal("30")))
+    db.add(KpiObjetivo(codigo="nps", valor_objetivo=Decimal("50")))
+    db.commit()
+
+    alertas = evaluar_alertas(db)
+    obj_alertas = [a for a in alertas if a["codigo"] == "objetivo_no_cumple"]
+    assert len(obj_alertas) == 1
+    assert "2024-01" in obj_alertas[0]["titulo"]
+
+
+@freeze_time("2026-12-31 12:00:00")
+def test_alertas_ultimo_dia_anio(db):
+    """Día 31-dic: "mes anterior" debe ser noviembre, no octubre."""
+    from app.kpis.alertas import evaluar_alertas
+    from app.models.kpi_objetivo import KpiObjetivo
+
+    _setup_minimo(db)
+    db.add(KpiManual(periodo="2026-11", codigo="nps", valor=Decimal("30")))
+    db.add(KpiObjetivo(codigo="nps", valor_objetivo=Decimal("50")))
+    db.commit()
+
+    alertas = evaluar_alertas(db)
+    obj_alertas = [a for a in alertas if a["codigo"] == "objetivo_no_cumple"]
+    assert len(obj_alertas) == 1
+    assert "2026-11" in obj_alertas[0]["titulo"]
+
+
+@freeze_time("2026-01-01 12:00:00")
+def test_alertas_primer_dia_anio(db):
+    """1-ene: "mes anterior" debe ser dic-2025 (cruce año explícito)."""
+    from app.kpis.alertas import evaluar_alertas
+    from app.models.kpi_objetivo import KpiObjetivo
+
+    _setup_minimo(db)
+    db.add(KpiManual(periodo="2025-12", codigo="nps", valor=Decimal("30")))
+    db.add(KpiObjetivo(codigo="nps", valor_objetivo=Decimal("50")))
+    db.commit()
+
+    alertas = evaluar_alertas(db)
+    obj_alertas = [a for a in alertas if a["codigo"] == "objetivo_no_cumple"]
+    assert len(obj_alertas) == 1
+    assert "2025-12" in obj_alertas[0]["titulo"]
+
+
+@freeze_time("2026-01-15 12:00:00")
+def test_crecimiento_sostenido_cruza_anio(db):
+    """N=6 y mes_actual=ene 2026 → ventana = ago 2025 a ene 2026.
+    El KPI debe armar correctamente el rango cruzando año.
+    Bug histórico: idx_total = año*12 + mes - (N-1) puede dar negativo si
+    no se maneja bien la división — esto valida que no ocurre."""
+    from app.kpis.financieros import crecimiento_sostenido
+    _setup_minimo(db)
+    # Cargo ventas crecientes Aug 2025 → Jan 2026
+    montos = [1000, 1100, 1200, 1300, 1400, 1500]  # estrictamente creciente
+    fechas = [
+        (2025, 8, 15), (2025, 9, 15), (2025, 10, 15),
+        (2025, 11, 15), (2025, 12, 15), (2026, 1, 10),
+    ]
+    for i, ((y, m, d), monto) in enumerate(zip(fechas, montos)):
+        db.add(Venta(
+            id_pedido=f"P{i}", id_venta=f"V{i}",
+            id_cliente=1, cliente="X",
+            fecha=datetime(y, m, d), total=Decimal(str(monto)),
+            monto_pago1=Decimal(str(monto)), caja1="cl",
+        ))
+    db.commit()
+
+    r = crecimiento_sostenido(db, meses=6)
+    # Debe analizar 6 períodos sin error de off-by-one
+    assert r["periodos_analizados"] == 6
+    # Crecimiento positivo (mediana) — todos los deltas son ~10%
+    assert r["tasa_mensual_pct"] is not None
+    assert r["tasa_mensual_pct"] > 0
+    # Mediana ~ 10% (cada mes crece 100/N respecto al anterior)
+    assert 8 <= r["tasa_mensual_pct"] <= 12
+
+
+@freeze_time("2026-03-31 12:00:00")
+def test_alertas_ultimo_dia_mes_31_dias(db):
+    """Día 31-mar: mes anterior debe ser febrero (28 días en 2026), no enero."""
+    from app.kpis.alertas import evaluar_alertas
+    from app.models.kpi_objetivo import KpiObjetivo
+
+    _setup_minimo(db)
+    db.add(KpiManual(periodo="2026-02", codigo="nps", valor=Decimal("30")))
+    db.add(KpiObjetivo(codigo="nps", valor_objetivo=Decimal("50")))
+    db.commit()
+
+    alertas = evaluar_alertas(db)
+    obj_alertas = [a for a in alertas if a["codigo"] == "objetivo_no_cumple"]
+    assert len(obj_alertas) == 1
+    assert "2026-02" in obj_alertas[0]["titulo"]
